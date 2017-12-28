@@ -39,8 +39,6 @@ hsv_limits = {
     }
 }
 
-pts = deque(maxlen=args['buffer'])
-
 # if a video path was not supplied, grab reference to webcam
 if not args.get('video', False):
     camera = cv2.VideoCapture(1)
@@ -53,6 +51,7 @@ out = cv2.VideoWriter('output.avi', fourcc, 29.4, (600, 450))
 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 fgbg = cv2.createBackgroundSubtractorMOG2()
 
+points = deque(maxlen=args.get('buffer'))
 while True:
 
     # grab current frame
@@ -83,7 +82,7 @@ while True:
     contours = []
     for mask in colour_masks:
         contours.append(cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL,
-                                cv2.CHAIN_APPROX_SIMPLE)[-2])
+                        cv2.CHAIN_APPROX_SIMPLE)[-2])
 
     center = None
 
@@ -103,20 +102,19 @@ while True:
                             (0, 255, 255), 2)
                     cv2.circle(frame, center, 5, (0, 0, 255), -1)
 
-    # update the points queue
-    pts.appendleft(center)
+        points.appendleft(center)
 
     # loop over the set of tracked points
-    for i in xrange(1, len(pts)):
-        # if either of the tracked points are None, ignore
-        # them
-        if pts[i - 1] is None or pts[i] is None:
+    for i in xrange(1, len(points)):
+        if points[i - 1] is None or points[i] is None:
             continue
 
         # otherwise, compute the thickness of the line and
         # draw the connecting lines
-        thickness = int(np.sqrt(args["buffer"] / float(i + 1)) * 2.5)
-        cv2.line(frame, pts[i - 1], pts[i], (0, 0, 255), thickness)
+
+        # thickness = int(np.sqrt(args["buffer"] / float(i + 1)) * 2.5)
+        # cv2.line(frame, points[i - 1], points[i], (0, 0, 255), thickness)
+        cv2.circle(frame, points[i], 3, (0, 0, 255), -1)
 
     # show the frame to our screen
     cv2.imshow('Frame', frame)
