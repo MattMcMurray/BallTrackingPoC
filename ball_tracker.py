@@ -9,26 +9,36 @@ import cv2
 # using HSV allows better fine-tuning of colour range than RGB
 HSV_LIMITS = {
     'green': {
-        'lower': (71, 96, 93),
-        'upper': (90, 241, 239)
+        'lower': (70, 36, 62),
+        'upper': (88, 255, 255)
     },
     'yellow': {
-        'lower': (33, 57, 190),
-        'upper': (64, 123, 255)
+        'lower': (33, 65, 130),
+        'upper': (50, 130, 255)
     },
     'orange': {
-        'lower': (0, 130, 196),
-        'upper': (20, 255, 255),
+        'lower': (0, 145, 190),
+        'upper': (15, 255, 255),
     },
     'blue': {
-        'lower': (106, 85, 143),
-        'upper': (116, 255, 255),
+        'lower': (85, 105, 80),
+        'upper': (165, 255, 255),
     },
     'pink': {
-        'lower': (159, 150, 185),
-        'upper': (197, 220, 255)
+        'lower': (160, 105, 80),
+        'upper': (180, 255, 255),
     }
 }
+
+BGR = {
+    'orange': (20, 153, 255),
+    'pink': (249, 54, 236),
+    'blue': (255, 0, 0),
+    'green': (0, 255, 0),
+    'yellow': (48, 251, 255)
+}
+
+FRAMES_SINCE_SEEN = {}
 
 # construct argparse
 ap = argparse.ArgumentParser()
@@ -38,60 +48,24 @@ ap.add_argument('-b', '--buffer', type=int, default=64,
                 help='max buffer size for tracked history (defaults to 64)')
 args = vars(ap.parse_args())
 
-def find_circles(frame):
-    ''' 
-    Uses HoughCircles to find circular objects in a video frame and returns the approximate
-    centres of all found circles
-    '''
-
-    CANNY_UPPER = 120
-    BLUR = 3
-
-    gframe = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gframe = cv2.GaussianBlur(gframe, (BLUR, BLUR), 0)
-    edges = cv2.Canny(gframe, CANNY_UPPER/2, CANNY_UPPER)
-    circles = cv2.HoughCircles(edges, cv2.HOUGH_GRADIENT,
-                               1.1, 5, param1=CANNY_UPPER, param2=25, minRadius=5 ,maxRadius=25)
-
-
-    try:
-        circles = np.round(circles[0, :]).astype("int")
-        for (x, y, r) in circles:
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            # cv2.putText(gframe, 'Ball', (x, y), font, 4, (0, 255, 0), 2, cv2.LINE_AA)
-            cv2.rectangle(gframe, (x - 1, y - 1), (x + 1, y + 1), (255, 255, 255), -1)
-            cv2.circle(gframe, (x, y), r, (255, 255, 255), 1)
-    except Exception as e:
-        pass
-
-    cv2.imshow('gray', gframe)
-    cv2.imshow('edges', edges)
-
-def init_masks(hsv_frame):
+def init_mask(hsv_frame, limits):
     '''
     Construct a mask for each colour defined in the dict
     then perform a series of dilations and erosions to remove small blobs
     left in mask.
     '''
-    hsv_frame = cv2.GaussianBlur(hsv_frame, (5, 5), 0)
-    colour_masks = []
-    colour_i = -1
-    i = 0
-    for colour, limits in HSV_LIMITS.iteritems():
-        m = cv2.inRange(hsv_frame, limits['lower'], limits['upper'])
-        m = cv2.erode(m, None, iterations=2)
-        m = cv2.dilate(m, None, iterations=2)
-        colour_masks.append(m)
-        if colour == 'pink':
-            colour_i = i
-            cv2.imshow('mask', m)
-        i += 1
+    m = cv2.inRange(hsv_frame, limits['lower'], limits['upper'])
+    m = cv2.erode(m, None, iterations=2)
+    m = cv2.dilate(m, None, iterations=2)
 
-    return colour_masks, colour_i
+    return m
+
+mask_hist = deque(maxlen=10)
+tracker_hist = deque(maxlen=64)
 
 def run():
     ''' Main method '''
-    tracker = None
+    trackers = {}
 
     # if a video path was not supplied, grab reference to webcam
     if not args.get('video', False):
@@ -100,7 +74,7 @@ def run():
         camera = cv2.VideoCapture(args['video'])
 
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter('output.avi', fourcc, 60, (600, 450))
+    out = cv2.VideoWriter('output.avi', fourcc, 59.52, (480, 640))
 
     points = deque(maxlen=args.get('buffer'))
     while True:
@@ -113,74 +87,68 @@ def run():
             break
 
         # resize frame, blur it, and convert it to HSV color space
-        frame = imutils.resize(frame, width=600)
+        frame = imutils.resize(frame, width=640)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
 
-        colour_masks, colour_i = init_masks(hsv)
+        for colour in HSV_LIMITS:
 
-        # find contours in all masks
-        contours = []
-        for mask in colour_masks:
-            contours.append(cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL,
-                                             cv2.CHAIN_APPROX_SIMPLE)[-2])
+            if trackers.get(colour) is None:
+                hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
+                mask = init_mask(hsv, HSV_LIMITS[colour])
+                contours = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
 
+                if FRAMES_SINCE_SEEN.get(colour) is not None:
+                    FRAMES_SINCE_SEEN[colour] += 1
+                # Assume largest bounding box is ball
+                bbox_padding = 0
+                try:
+                    roi_c = max(contours, key=cv2.contourArea)
+                    roi = cv2.boundingRect(roi_c)
+                    x, y, w, h = roi
 
-        if tracker is None:
-            # Assume largest bounding box is ball
-            padding = 5
-            try:
-                roi_c = max(contours[colour_i], key=cv2.contourArea)
-                roi = cv2.boundingRect(roi_c)
-                x, y, w, h = roi
+                    mask_hist.appendleft((x + w/2, y + h/2))
 
-                tracker = cv2.TrackerKCF_create()
-                tracker.init(frame, (x - padding, y - padding, w + padding*2, h + padding*2))
-            except Exception as e:
-                print(e)
+                    trackers[colour] = cv2.TrackerKCF_create()
+                    trackers[colour].init(frame, (x - bbox_padding, y - bbox_padding,
+                                         w + bbox_padding*2, h + bbox_padding*2))
+                except Exception as e:
+                    pass
 
-        else:
-            ok, bbox = tracker.update(frame)
-            # Draw bounding box
-            if ok:
-                # Tracking success
-                p1 = (int(bbox[0]), int(bbox[1]))
-                p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
-                cv2.rectangle(frame, p1, p2, (255, 255, 255), 2, 1)
             else:
-                # Tracking failure
-                cv2.putText(frame, "Tracking failure detected", (100, 80),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
-                tracker = None
+                ok, bbox = trackers[colour].update(frame)
+                # Draw bounding box
+                if ok:
+                    FRAMES_SINCE_SEEN[colour] = 0
 
+                    # Tracking success
+                    # p1 = (int(bbox[0]), int(bbox[1]))
+                    # p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
+                    # cv2.rectangle(frame, p1, p2, BGR.get(colour, (255, 255, 255)), 2, 1)
+                    cv2.putText(frame, colour, (int(bbox[0]), int(bbox[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                    tracker_hist.appendleft((int(bbox[0] + bbox[2]/2), int(bbox[1] + bbox[3]/2)))
+                else:
+                    FRAMES_SINCE_SEEN[colour] += 1
+                    if FRAMES_SINCE_SEEN.get(colour) is not None:
+                        if 5 < FRAMES_SINCE_SEEN[colour] <= 30:
+                            trackers[colour] = None
+                            print('Resetting {colour} at {frames} frames'.format(colour=colour, frames=FRAMES_SINCE_SEEN.get(colour)))
 
-        center = None
-
-        # only proceed if at least one contour was found
-        for c in contours:
-            for contour in c:
-                if len(contour) > 0:
-                    ((x, y), radius) = cv2.minEnclosingCircle(contour)
-                    M = cv2.moments(contour)
-                    center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
-
-                    # only proceed if the radius meets a minimum size
-                    if radius > 10:
-                        # draw the circle and centroid on the frame,
-                        # then update the list of tracked points
-                        cv2.circle(frame, (int(x), int(y)), int(radius),
-                                (0, 255, 255), 2)
-                        cv2.circle(frame, center, 5, (0, 0, 255), -1)
-
-                points.appendleft(center)
-
-        # loop over the set of tracked points
-        for i in xrange(1, len(points)):
-            if points[i - 1] is None or points[i] is None:
+        # loop over the set of mask adjustments
+        for i in xrange(1, len(mask_hist)):
+            if mask_hist[i - 1] is None or mask_hist[i] is None:
                 continue
 
             # draw "history" on image
-            cv2.circle(frame, points[i], 3, (0, 0, 255), -1)
+            cv2.circle(frame, mask_hist[i], 3, (100, 100, 255), -1)
+
+        # loop over the set of tracked points
+        for i in xrange(1, len(tracker_hist)):
+            if tracker_hist[i - 1] is None or tracker_hist[i] is None:
+                continue
+
+            # draw "history" on image
+            cv2.circle(frame, tracker_hist[i], 3, (0, 150, 0), -1)
 
         # show the frame to our screen
         cv2.imshow('Frame', frame)
