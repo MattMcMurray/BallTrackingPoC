@@ -1,7 +1,6 @@
 from collections import deque
 import argparse
 
-import numpy as np
 import imutils
 import cv2
 
@@ -38,15 +37,16 @@ BGR = {
     'yellow': (48, 251, 255)
 }
 
-FRAMES_SINCE_SEEN = {}
+def _argparse():
+    # construct argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('-v', '--video',
+                    help='[Optional] path to a video file')
+    ap.add_argument('-b', '--buffer', type=int, default=64,
+                    help='max buffer size for tracked history (defaults to 64)')
+    args = vars(ap.parse_args())
 
-# construct argparse
-ap = argparse.ArgumentParser()
-ap.add_argument('-v', '--video',
-                help='[Optional] path to a video file')
-ap.add_argument('-b', '--buffer', type=int, default=64,
-                help='max buffer size for tracked history (defaults to 64)')
-args = vars(ap.parse_args())
+    return args
 
 def init_mask(hsv_frame, limits):
     '''
@@ -63,9 +63,19 @@ def init_mask(hsv_frame, limits):
 mask_hist = deque(maxlen=10)
 tracker_hist = deque(maxlen=64)
 
-def run():
+def draw_history_buffer(buffer_deque, frame, color=(255, 255, 255)):
+    ''' Draws a set of points detailing history of movement '''
+    for i in xrange(1, len(buffer_deque)):
+        if buffer_deque[i - 1] is None or buffer_deque[i] is None:
+            continue
+
+        # draw "history" on image
+        cv2.circle(frame, buffer_deque[i], 3, color, -1)
+
+def run(args):
     ''' Main method '''
     trackers = {}
+    frames_since_last_seen = {}
 
     # if a video path was not supplied, grab reference to webcam
     if not args.get('video', False):
@@ -76,13 +86,8 @@ def run():
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
     out = cv2.VideoWriter('output.avi', fourcc, 59.52, (480, 640))
 
-    points = deque(maxlen=args.get('buffer'))
     while True:
-
-
-        # grab current frame
         (grabbed, frame) = camera.read()
-
         if args.get('video') and not grabbed:
             break
 
@@ -90,16 +95,16 @@ def run():
         frame = imutils.resize(frame, width=640)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-
         for colour in HSV_LIMITS:
 
             if trackers.get(colour) is None:
                 hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
                 mask = init_mask(hsv, HSV_LIMITS[colour])
-                contours = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+                contours = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL,
+                                            cv2.CHAIN_APPROX_SIMPLE)[-2]
 
-                if FRAMES_SINCE_SEEN.get(colour) is not None:
-                    FRAMES_SINCE_SEEN[colour] += 1
+                if frames_since_last_seen.get(colour) is not None:
+                    frames_since_last_seen[colour] += 1
                 # Assume largest bounding box is ball
                 bbox_padding = 0
                 try:
@@ -111,7 +116,7 @@ def run():
 
                     trackers[colour] = cv2.TrackerKCF_create()
                     trackers[colour].init(frame, (x - bbox_padding, y - bbox_padding,
-                                         w + bbox_padding*2, h + bbox_padding*2))
+                                                  w + bbox_padding*2, h + bbox_padding*2))
                 except Exception as e:
                     pass
 
@@ -119,36 +124,19 @@ def run():
                 ok, bbox = trackers[colour].update(frame)
                 # Draw bounding box
                 if ok:
-                    FRAMES_SINCE_SEEN[colour] = 0
+                    frames_since_last_seen[colour] = 0
 
-                    # Tracking success
-                    # p1 = (int(bbox[0]), int(bbox[1]))
-                    # p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
-                    # cv2.rectangle(frame, p1, p2, BGR.get(colour, (255, 255, 255)), 2, 1)
-                    cv2.putText(frame, colour, (int(bbox[0]), int(bbox[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                    cv2.putText(frame, colour, (int(bbox[0]), int(bbox[1])),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                     tracker_hist.appendleft((int(bbox[0] + bbox[2]/2), int(bbox[1] + bbox[3]/2)))
                 else:
-                    FRAMES_SINCE_SEEN[colour] += 1
-                    if FRAMES_SINCE_SEEN.get(colour) is not None:
-                        if 5 < FRAMES_SINCE_SEEN[colour] <= 30:
+                    frames_since_last_seen[colour] += 1
+                    if frames_since_last_seen.get(colour) is not None:
+                        if 5 < frames_since_last_seen[colour] <= 30:
                             trackers[colour] = None
-                            print('Resetting {colour} at {frames} frames'.format(colour=colour, frames=FRAMES_SINCE_SEEN.get(colour)))
 
-        # loop over the set of mask adjustments
-        for i in xrange(1, len(mask_hist)):
-            if mask_hist[i - 1] is None or mask_hist[i] is None:
-                continue
-
-            # draw "history" on image
-            cv2.circle(frame, mask_hist[i], 3, (100, 100, 255), -1)
-
-        # loop over the set of tracked points
-        for i in xrange(1, len(tracker_hist)):
-            if tracker_hist[i - 1] is None or tracker_hist[i] is None:
-                continue
-
-            # draw "history" on image
-            cv2.circle(frame, tracker_hist[i], 3, (0, 150, 0), -1)
+        draw_history_buffer(mask_hist, frame, (100, 100, 255))
+        draw_history_buffer(tracker_hist, frame, (0, 150, 0))
 
         # show the frame to our screen
         cv2.imshow('Frame', frame)
@@ -165,4 +153,5 @@ def run():
     camera.release()
 
 if __name__ == '__main__':
-    run()
+    args = _argparse()
+    run(args)
