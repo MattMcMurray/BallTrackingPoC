@@ -8,59 +8,54 @@ import imutils
 
 from matplotlib import pyplot as plt
 
-def parse_args():
-    ''' Parses arguments '''
-    ap = argparse.ArgumentParser()
-    ap.add_argument('-l', '--left',
-                    help='Left hand side image')
-    ap.add_argument('-r', '--right',
-                    help='Right hand side image')
+LEFT = 0
+RIGHT = 1
 
-    if len(sys.argv) <= 2:
-        ap.print_help()
-        sys.exit(1)
+def calibrate_single_camera(cam):
+    (grabbed, frame) = cam.read()
 
-    return vars(ap.parse_args())
+    cv.imshow('frame', frame)
 
-def get_image_paths(args):
-    ''' Ensures that both a left and right image were passed '''
-    l_path = args.get('left')
-    r_path = args.get('right')
+    while True:
+        key = cv.waitKey(1) & 0xFF
 
-    if l_path is None or r_path is None:
-        print('Missing argument(s)')
-        sys.exit(1)
+        # if the 'q' key is pressed, stop the loop
+        if key == ord("q"):
+            break
 
-    return l_path, r_path
+    cv.destroyAllWindows()
+    cam.release()
 
-def run(args):
-    l_path, r_path = get_image_paths(args)
 
-    imleft = cv.imread(l_path)
-    imright = cv.imread(r_path)
+def run():
+    cam1 = cv.VideoCapture(0)
+    cam2 = cv.VideoCapture(1)
 
-    imleft = imutils.resize(imleft, width=640)
-    imright = imutils.resize(imright, width=640)
+    cam1.grab()
+    cam2.grab()
 
-    imleft = cv.cvtColor(imleft, cv.COLOR_BGR2GRAY)
-    imright = cv.cvtColor(imright, cv.COLOR_BGR2GRAY)
+    _, frame1 = cam1.retrieve()
+    _, frame2 = cam2.retrieve()
 
-    # stereo = cv.StereoBM_create(numDisparities=16, blockSize=15)
-    window_size = 5
-    min_disp = 32
-    num_disp = 112 - min_disp
-    stereo = cv.StereoSGBM(
-        minDisparity=min_disp,
-        numDisparities=num_disp,
-        SADWindowSize=window_size,
-        uniquenessRatio=10,
-        speckleWindowSize=100,
-        speckleRange=32,
-        disp12MaxDiff=1,
-        P1=8 * 3 * window_size**2,
-        P2=32 * 3 * window_size**2,
-        fullDP=False
-    )
+    imleft = cv.cvtColor(frame2, cv.COLOR_BGR2GRAY)
+    imright = cv.cvtColor(frame1, cv.COLOR_BGR2GRAY)
+
+    cv.imshow('left', imleft)
+    cv.imshow('right', imright)
+
+    while True:
+        key = cv.waitKey(1) & 0xFF
+
+        # if the 'q' key is pressed, stop the loop
+        if key == ord("q"):
+            break
+
+    cv.destroyAllWindows()
+    cam1.release()
+    cam2.release()
+
+    stereo = cv.StereoBM_create(numDisparities=32, blockSize=11)
+
     disparity = stereo.compute(imleft, imright)
 
     plt.imshow(disparity, 'gray')
@@ -69,5 +64,4 @@ def run(args):
     return
 
 if __name__ == '__main__':
-    args = parse_args()
-    run(args)
+    calibrate_single_camera(cv.VideoCapture(0))
