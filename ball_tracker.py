@@ -1,5 +1,6 @@
 from collections import deque
 import argparse
+import time
 
 import imutils
 import cv2
@@ -7,25 +8,25 @@ import cv2
 # define upper/lower bounds of colour to track
 # using HSV allows better fine-tuning of colour range than RGB
 HSV_LIMITS = {
-    'green': {
-        'lower': (70, 36, 62),
-        'upper': (88, 255, 255)
-    },
+    # 'green': {
+    #     'lower': (70, 36, 62),
+    #     'upper': (88, 255, 255)
+    # },
     'yellow': {
-        'lower': (33, 65, 130),
-        'upper': (50, 130, 255)
+        'lower': (29, 155, 202),
+        'upper': (46, 255, 255)
     },
     'orange': {
-        'lower': (0, 145, 190),
-        'upper': (15, 255, 255),
+        'lower': (19, 145, 170),
+        'upper': (30, 230, 255),
     },
-    'blue': {
-        'lower': (85, 105, 80),
-        'upper': (165, 255, 255),
-    },
+    # 'blue': {
+    #     'lower': (85, 105, 80),
+    #     'upper': (165, 255, 255),
+    # },
     'pink': {
-        'lower': (160, 105, 80),
-        'upper': (180, 255, 255),
+        'lower': (162, 45, 145),
+        'upper': (185, 150, 255),
     }
 }
 
@@ -44,24 +45,26 @@ def _argparse():
                     help='[Optional] path to a video file')
     ap.add_argument('-b', '--buffer', type=int, default=64,
                     help='max buffer size for tracked history (defaults to 64)')
+    ap.add_argument('-d', '--debug', action='store_true',
+                    help='[Optional] enable debugging output')
+    ap.add_argument('-t', '--tracker', action='store_true',
+                    help='[Optional] Use a tracker object for each ball')
     args = vars(ap.parse_args())
 
     return args
 
-def init_mask(hsv_frame, limits):
+def draw_mask(hsv_frame, limits):
     '''
     Construct a mask for each colour defined in the dict
     then perform a series of dilations and erosions to remove small blobs
     left in mask.
     '''
     m = cv2.inRange(hsv_frame, limits['lower'], limits['upper'])
-    m = cv2.erode(m, None, iterations=2)
-    m = cv2.dilate(m, None, iterations=2)
+    m = cv2.erode(m, None, iterations=1)
+    m = cv2.dilate(m, None, iterations=1)
 
     return m
 
-mask_hist = deque(maxlen=10)
-tracker_hist = deque(maxlen=64)
 
 def draw_history_buffer(buffer_deque, frame, color=(255, 255, 255)):
     ''' Draws a set of points detailing history of movement '''
@@ -84,7 +87,7 @@ def run(args):
         camera = cv2.VideoCapture(args['video'])
 
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter('output.avi', fourcc, 59.52, (480, 640))
+    out = cv2.VideoWriter('output.avi', fourcc, 29.97, (480, 640))
 
     while True:
         (grabbed, frame) = camera.read()
@@ -97,30 +100,34 @@ def run(args):
 
         for colour in HSV_LIMITS:
 
-            if trackers.get(colour) is None:
-                hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
-                mask = init_mask(hsv, HSV_LIMITS[colour])
-                contours = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL,
-                                            cv2.CHAIN_APPROX_SIMPLE)[-2]
+            mask = draw_mask(hsv, HSV_LIMITS[colour])
+            contours = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+
+            try:
+                # Assume largest bounding box is ball
+                roi_c = max(contours, key=cv2.contourArea)
+            except ValueError as e:
+                if DEBUG:
+                    print 'No contour for {}'.format(colour)
+
+            roi = cv2.boundingRect(roi_c)
+            x, y, w, h = roi
+            mask_hist.appendleft((x + w/2, y + h/2))
+
+            if TRACKER & (trackers.get(colour) is None):
 
                 if frames_since_last_seen.get(colour) is not None:
                     frames_since_last_seen[colour] += 1
-                # Assume largest bounding box is ball
                 bbox_padding = 0
                 try:
-                    roi_c = max(contours, key=cv2.contourArea)
-                    roi = cv2.boundingRect(roi_c)
-                    x, y, w, h = roi
-
-                    mask_hist.appendleft((x + w/2, y + h/2))
-
                     trackers[colour] = cv2.TrackerKCF_create()
                     trackers[colour].init(frame, (x - bbox_padding, y - bbox_padding,
                                                   w + bbox_padding*2, h + bbox_padding*2))
                 except Exception as e:
-                    pass
+                    if DEBUG:
+                        print e
 
-            else:
+            elif TRACKER:
                 ok, bbox = trackers[colour].update(frame)
                 # Draw bounding box
                 if ok:
@@ -136,17 +143,21 @@ def run(args):
                             trackers[colour] = None
 
         draw_history_buffer(mask_hist, frame, (100, 100, 255))
-        draw_history_buffer(tracker_hist, frame, (0, 150, 0))
+        if TRACKER:
+            draw_history_buffer(tracker_hist, frame, (0, 150, 0))
 
         # show the frame to our screen
         cv2.imshow('Frame', frame)
 
         out.write(frame)
-        key = cv2.waitKey(1) & 0xFF
 
+        time.sleep(0.01)
+
+        key = cv2.waitKey(1) & 0xFF
         # if the 'q' key is pressed, stop the loop
         if key == ord("q"):
             break
+
 
     out.release()
     cv2.destroyAllWindows()
@@ -154,4 +165,12 @@ def run(args):
 
 if __name__ == '__main__':
     args = _argparse()
+
+    DEBUG = args.get('debug')
+    TRACKER = args.get('tracker')
+
+    b = args.get('buffer')
+    mask_hist = deque(maxlen=b / 10)
+    tracker_hist = deque(maxlen=b)
+
     run(args)
