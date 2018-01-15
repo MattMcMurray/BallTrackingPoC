@@ -7,8 +7,11 @@ import cv2
 from matplotlib import pyplot as plt
 import numpy as np
 
-LEFT = 0
-RIGHT = 1
+
+TERMINATION_CRITERIA = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 30,
+                        0.001)
+REMAP_INTERPOLATION = cv2.INTER_LINEAR
+OPTIMIZE_ALPHA = 0.25
 
 def wait_for_q():
     while True:
@@ -18,28 +21,8 @@ def wait_for_q():
         if key == ord("q"):
             break
         elif key == ord("a"):
-            print('Abort')
+            print 'Abort' 
             sys.exit(0)
-
-def cache_calibration_arrays(ret, mtx, dist, rvecs, tvecs, file_prefix):
-    np.save(os.path.join('calibration', '{}_ret.npy'.format(file_prefix)), ret)
-    np.save(os.path.join('calibration', '{}_mtx.npy'.format(file_prefix)), mtx)
-    np.save(os.path.join('calibration', '{}_dist.npy'.format(file_prefix)), dist)
-    np.save(os.path.join('calibration', '{}_rvecs.npy'.format(file_prefix)), rvecs)
-    np.save(os.path.join('calibration', '{}_tvecs.npy'.format(file_prefix)), tvecs)
-
-def load_calibration_arrays(file_prefix):
-    try:
-        ret = np.load(os.path.join('calibration', '{}_ret.npy'.format(file_prefix)))
-        mtx = np.load(os.path.join('calibration', '{}_mtx.npy'.format(file_prefix)))
-        dist = np.load(os.path.join('calibration', '{}_dist.npy'.format(file_prefix)))
-        rvecs = np.load(os.path.join('calibration', '{}_rvecs.npy'.format(file_prefix)))
-        tvecs = np.load(os.path.join('calibration', '{}_tvecs.npy'.format(file_prefix)))
-
-        return ret, mtx, dist, rvecs, tvecs
-    except IOError as e:
-        print 'Could not load distortion matrices from disk...'
-        return None
 
 def capture_calibrated_shot():
     cam1 = cv2.VideoCapture(0)
@@ -85,30 +68,24 @@ def calibrate_single_camera(frame, file_prefix):
     objpoints = []  # 3d point in real world space
     imgpoints = []  # 2d points in image plane.
 
-    calib_arrs = load_calibration_arrays(file_prefix)
 
-    if calib_arrs is None:
-        print('Buidling new distortion correction matrices...')
+    print('Buidling new distortion correction matrices...')
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        ret, corners = cv2.findChessboardCorners(gray, (num_rows, num_cols), None)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    ret, corners = cv2.findChessboardCorners(gray, (num_rows, num_cols), None)
 
-        if ret == True:
-            objpoints.append(objp)
+    if ret == True:
+        objpoints.append(objp)
 
-            cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-            imgpoints.append(corners)
+        cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+        imgpoints.append(corners)
 
-            # Draw and display the corners
-            cv2.drawChessboardCorners(frame, (num_rows, num_cols), corners, ret)
+        # Draw and display the corners
+        cv2.drawChessboardCorners(frame, (num_rows, num_cols), corners, ret)
 
-        ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
-            objpoints, imgpoints, gray.shape[::-1], None, None)
+    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
+        objpoints, imgpoints, gray.shape[::-1], None, None)
 
-        cache_calibration_arrays(ret, mtx, dist, rvecs, tvecs, file_prefix)
-    else:
-        print('Loaded cached arrays')
-        ret, mtx, dist, rvecs, tvecs = calib_arrs
 
     h,  w = frame.shape[:2]
     newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
@@ -126,21 +103,82 @@ def calibrate_single_camera(frame, file_prefix):
 
     cv2.destroyAllWindows()
 
-    return dst
+    return dst, objpoints, imgpoints, mtx, dist
 
-def build_depth_map(left, right):
+def build_depth_map(left, right, leftMapX, leftMapY, rightMapX, rightMapY):
 
-    imleft = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
-    imright = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
+    stereoMatcher = cv2.StereoBM_create()
 
-    stereo = cv2.StereoBM_create(numDisparities=32, blockSize=11)
+    fixedLeft = cv2.remap(left, leftMapX, leftMapY, REMAP_INTERPOLATION)
+    fixedRight = cv2.remap(right, rightMapX, rightMapY, REMAP_INTERPOLATION)
 
-    disparity = stereo.compute(imleft, imright)
+    cv2.imshow('fixedLeft', fixedLeft)
+    cv2.imshow('fixedRight', fixedRight)
 
-    plt.imshow(disparity, 'gray')
-    plt.show()
+    wait_for_q()
 
-    return
+    cv2.destroyAllWindows()
+
+    grayLeft = cv2.cvtColor(fixedLeft, cv2.COLOR_BGR2GRAY)
+    grayRight = cv2.cvtColor(fixedRight, cv2.COLOR_BGR2GRAY)
+    depth = stereoMatcher.compute(grayLeft, grayRight)
+
+    DEPTH_VISUALIZATION_SCALE = 2048
+    cv2.imshow('depth', depth / DEPTH_VISUALIZATION_SCALE)
+
+    wait_for_q()
+
+def stereo_calibration(left, right):
+    l_im, l_objpoints, l_imgpoints, l_mtx, l_dist = left
+    r_im, r_objpoints, r_imgpoints, r_mtx, r_dist = right
+
+    # crop both images to the same dimensions
+    l_h, l_w, _ = np.shape(l_im)
+    r_h, r_w, _ = np.shape(r_im)
+    h = min(l_h, r_h)
+    w = min(l_w, r_w)
+    l_im = l_im[:h, :w, :]
+    r_im = r_im[:h, :w, :]
+
+    print(np.shape(l_im))
+    print(np.shape(r_im))
+
+    cv2.imshow('croppedLeft', l_im)
+    cv2.imshow('croppedRight', r_im)
+
+    wait_for_q()
+
+    size = (w, h)
+
+    # TODO: snake_case
+
+    (_, _, _, _, _, rotationMatrix, translationVector, _, _) = cv2.stereoCalibrate(
+        l_objpoints, l_imgpoints, r_imgpoints,
+        l_mtx, l_dist,
+        r_mtx, r_dist,
+        size, None, None, None, None)
+
+    (leftRectification, rightRectification, leftProjection, rightProjection,
+        dispartityToDepthMap, leftROI, rightROI) = cv2.stereoRectify(
+        l_mtx, l_dist,
+        r_mtx, r_dist,
+        size, rotationMatrix, translationVector,
+        None, None, None, None, None,
+        cv2.CALIB_ZERO_DISPARITY, OPTIMIZE_ALPHA)
+
+
+    leftMapX, leftMapY = cv2.initUndistortRectifyMap(
+        l_mtx, l_dist, leftRectification,
+        leftProjection, size, cv2.CV_32FC1)
+    rightMapX, rightMapY = cv2.initUndistortRectifyMap(
+        r_mtx, r_dist, rightRectification,
+        rightProjection, size, cv2.CV_32FC1)
+
+    return l_im, leftMapX, leftMapY, r_im, rightMapX, rightMapY
+
 
 if __name__ == '__main__':
     left, right = capture_calibrated_shot()
+    l_image, leftMapX, leftMapY, r_image, rightMapX, rightMapY = stereo_calibration(left, right)
+
+    build_depth_map(l_image, r_image, leftMapX, leftMapY, rightMapX, rightMapY)

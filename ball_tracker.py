@@ -87,7 +87,7 @@ def run(args):
         camera = cv2.VideoCapture(args['video'])
 
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter('output.avi', fourcc, 29.97, (480, 640))
+    out = cv2.VideoWriter('output.avi', fourcc, 29.97, (1280, 720))
 
     while True:
         (grabbed, frame) = camera.read()
@@ -95,7 +95,7 @@ def run(args):
             break
 
         # resize frame, blur it, and convert it to HSV color space
-        frame = imutils.resize(frame, width=640)
+        frame = imutils.resize(frame, width=1280)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
         for colour in HSV_LIMITS:
@@ -150,8 +150,6 @@ def run(args):
         cv2.imshow('Frame', frame)
 
         out.write(frame)
-
-        time.sleep(0.01)
 
         key = cv2.waitKey(1) & 0xFF
         # if the 'q' key is pressed, stop the loop
